@@ -1,0 +1,486 @@
+---
+title: "Infrastructure Analytics Dashboard"
+summary: "Real-time business intelligence dashboard consolidating infrastructure KPIs, reducing reporting time from 6 hours to 10 minutes with automated ETL pipelines."
+category: "BI"
+coverImage: "/projects/infrastructure.jpg"
+githubUrl: "#"
+liveUrl: "#"
+featured: true
+metrics:
+  - label: "Time Saved"
+    value: "6 hrs → 10 mins"
+  - label: "Data Sources"
+    value: "7 Systems"
+  - label: "Dashboards"
+    value: "12 Interactive Views"
+stack:
+  - "Power BI"
+  - "Tableau"
+  - "SQL Server"
+  - "Python"
+  - "Pandas"
+  - "Apache Airflow"
+---
+
+## The Challenge: Data Silos & Manual Reporting
+
+Large infrastructure projects generate **massive amounts of data** across disconnected systems:
+- Project management tools (Jira, MS Project)
+- Financial systems (SAP, Oracle ERP)
+- Resource management databases
+- Document management systems
+- IoT sensors and field equipment
+- Time-tracking software
+- Vendor portals
+
+**The problem?** This data lived in **silos**. Generating a weekly progress report required:
+- 6+ hours of manual data extraction
+- Copy-pasting from 7 different systems
+- Reconciling inconsistencies and duplicates
+- Manual calculations in Excel
+- Creating charts in PowerPoint
+
+By the time the report was finished, the data was **already outdated**. Decision-makers lacked real-time visibility into project health, budgets, and resource allocation.
+
+**The impact:**
+- Delayed identification of budget overruns (discovered weeks late)
+- Inefficient resource allocation due to outdated utilization data
+- Inability to spot trends or predict risks proactively
+- Frustrated stakeholders demanding "just one dashboard"
+
+## The Solution: Unified BI Platform
+
+I designed and implemented a **real-time infrastructure analytics dashboard** that automatically consolidates data from 7 disparate sources, providing executive leadership with instant visibility into project performance.
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                   Data Sources Layer                     │
+├──────────┬──────────┬──────────┬──────────┬─────────────┤
+│   Jira   │   SAP    │   SQL    │  Excel   │  IoT APIs   │
+│  (REST)  │  (ODBC)  │ (Direct) │  Files   │   (HTTP)    │
+└────┬─────┴────┬─────┴────┬─────┴────┬─────┴──────┬──────┘
+     │          │          │          │            │
+     ▼          ▼          ▼          ▼            ▼
+┌─────────────────────────────────────────────────────────┐
+│                ETL Pipeline (Airflow)                    │
+│  • Extract: API calls, SQL queries, file parsing        │
+│  • Transform: Clean, normalize, calculate metrics       │
+│  • Load: Upsert to SQL Server data warehouse            │
+└────────────────────────┬────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│           Data Warehouse (SQL Server)                    │
+│  • Fact tables: Projects, Tasks, Financials, Resources  │
+│  • Dimension tables: Dates, Locations, Categories       │
+│  • Aggregated views for performance                     │
+└────────────────────────┬────────────────────────────────┘
+                         │
+                         ▼
+┌─────────────────────────────────────────────────────────┐
+│          Visualization Layer (Power BI / Tableau)        │
+│  • 12 interactive dashboards                             │
+│  • Real-time refresh (every 15 minutes)                 │
+│  • Role-based access control                            │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Component 1: Automated ETL Pipeline
+
+Built robust ETL (Extract, Transform, Load) pipelines using **Python** and **Apache Airflow** for orchestration.
+
+**Extract Phase:**
+```python
+import requests
+import pyodbc
+import pandas as pd
+from jira import JIRA
+
+# Extract from Jira API
+def extract_jira_data():
+    jira = JIRA(server='https://company.atlassian.net', 
+                basic_auth=('user', 'token'))
+    
+    issues = jira.search_issues('project=INFRA', maxResults=1000)
+    
+    return pd.DataFrame([{
+        'issue_key': issue.key,
+        'summary': issue.fields.summary,
+        'status': issue.fields.status.name,
+        'assignee': issue.fields.assignee.displayName,
+        'created': issue.fields.created,
+        'updated': issue.fields.updated,
+        'story_points': getattr(issue.fields, 'customfield_10016', None)
+    } for issue in issues])
+
+# Extract from SAP ERP (financial data)
+def extract_sap_financials():
+    conn = pyodbc.connect('DSN=SAP_PROD;UID=user;PWD=pass')
+    
+    query = """
+        SELECT 
+            project_code,
+            cost_center,
+            budget_allocated,
+            actual_spend,
+            committed_spend,
+            forecast_spend,
+            transaction_date
+        FROM SAP_FINANCIALS
+        WHERE project_type = 'INFRASTRUCTURE'
+        AND transaction_date >= DATEADD(month, -6, GETDATE())
+    """
+    
+    return pd.read_sql(query, conn)
+
+# Extract from IoT sensors (equipment monitoring)
+def extract_iot_telemetry():
+    response = requests.get(
+        'https://api.iot-platform.com/v1/telemetry',
+        params={'project': 'INFRA', 'last_24h': True},
+        headers={'Authorization': f'Bearer {API_TOKEN}'}
+    )
+    
+    return pd.DataFrame(response.json()['data'])
+```
+
+**Transform Phase** (Data Cleaning & Business Logic):
+```python
+def transform_data(jira_df, sap_df, iot_df):
+    # Normalize date formats
+    jira_df['created'] = pd.to_datetime(jira_df['created'])
+    sap_df['transaction_date'] = pd.to_datetime(sap_df['transaction_date'])
+    
+    # Calculate derived metrics
+    sap_df['budget_utilization_%'] = (
+        sap_df['actual_spend'] / sap_df['budget_allocated'] * 100
+    )
+    
+    sap_df['variance'] = sap_df['budget_allocated'] - sap_df['actual_spend']
+    
+    # Categorize budget health
+    def categorize_budget(util):
+        if util < 85:
+            return 'Healthy'
+        elif util < 100:
+            return 'Caution'
+        else:
+            return 'Overbudget'
+    
+    sap_df['budget_status'] = sap_df['budget_utilization_%'].apply(categorize_budget)
+    
+    # Join Jira tasks with financial data
+    merged_df = jira_df.merge(
+        sap_df, 
+        left_on='issue_key', 
+        right_on='project_code',
+        how='left'
+    )
+    
+    return merged_df
+```
+
+**Load Phase** (Upsert to Data Warehouse):
+```python
+from sqlalchemy import create_engine
+
+def load_to_warehouse(df, table_name):
+    engine = create_engine('mssql+pyodbc://server/warehouse?driver=ODBC+Driver+17')
+    
+    # Upsert logic: update existing, insert new
+    df.to_sql(
+        table_name, 
+        engine, 
+        if_exists='append',
+        index=False,
+        method='multi',
+        chunksize=1000
+    )
+    
+    # Execute merge statement
+    with engine.connect() as conn:
+        conn.execute(f"""
+            MERGE {table_name} AS target
+            USING staged_data AS source
+            ON target.id = source.id
+            WHEN MATCHED THEN 
+                UPDATE SET target.* = source.*
+            WHEN NOT MATCHED THEN
+                INSERT VALUES (source.*);
+        """)
+```
+
+**Airflow DAG** (Orchestration):
+```python
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime, timedelta
+
+default_args = {
+    'owner': 'data-team',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 1, 1),
+    'email_on_failure': True,
+    'email': ['alerts@company.com'],
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+}
+
+dag = DAG(
+    'infrastructure_etl_pipeline',
+    default_args=default_args,
+    schedule_interval='*/15 * * * *',  # Every 15 minutes
+    catchup=False
+)
+
+extract_jira = PythonOperator(
+    task_id='extract_jira',
+    python_callable=extract_jira_data,
+    dag=dag
+)
+
+extract_sap = PythonOperator(
+    task_id='extract_sap',
+    python_callable=extract_sap_financials,
+    dag=dag
+)
+
+transform = PythonOperator(
+    task_id='transform_data',
+    python_callable=transform_data,
+    dag=dag
+)
+
+load = PythonOperator(
+    task_id='load_warehouse',
+    python_callable=load_to_warehouse,
+    dag=dag
+)
+
+[extract_jira, extract_sap] >> transform >> load
+```
+
+### Component 2: Data Warehouse Design
+
+Implemented a **star schema** in SQL Server for optimal query performance:
+
+**Fact Tables:**
+- `fact_projects`: Project-level metrics (budget, timeline, resources)
+- `fact_tasks`: Task-level details (status, assignee, hours)
+- `fact_financials`: Transaction history (spend, commitments, forecasts)
+- `fact_equipment`: IoT telemetry (uptime, maintenance, alerts)
+
+**Dimension Tables:**
+- `dim_date`: Time dimension (day, week, month, quarter, fiscal year)
+- `dim_location`: Project locations (site, region, country)
+- `dim_category`: Project types and classifications
+- `dim_employee`: Resource directory
+
+**Example: Optimized query for budget dashboard**
+```sql
+CREATE VIEW vw_budget_summary AS
+SELECT 
+    p.project_name,
+    p.project_manager,
+    l.region,
+    d.fiscal_quarter,
+    SUM(f.budget_allocated) AS total_budget,
+    SUM(f.actual_spend) AS total_spend,
+    SUM(f.committed_spend) AS committed,
+    (SUM(f.actual_spend) / NULLIF(SUM(f.budget_allocated), 0)) * 100 AS utilization_pct,
+    COUNT(DISTINCT t.task_id) AS total_tasks,
+    COUNT(DISTINCT CASE WHEN t.status = 'Completed' THEN t.task_id END) AS completed_tasks
+FROM fact_projects p
+JOIN fact_financials f ON p.project_id = f.project_id
+JOIN fact_tasks t ON p.project_id = t.project_id
+JOIN dim_location l ON p.location_id = l.location_id
+JOIN dim_date d ON f.transaction_date = d.date_key
+WHERE d.fiscal_year = YEAR(GETDATE())
+GROUP BY p.project_name, p.project_manager, l.region, d.fiscal_quarter;
+```
+
+### Component 3: Interactive Dashboards
+
+Created **12 specialized dashboards** in Power BI and Tableau:
+
+**1. Executive Summary Dashboard**
+- KPI cards: Total budget, YTD spend, projects at risk
+- Budget utilization gauge charts
+- Project timeline Gantt chart
+- Geographic heat map of project locations
+
+**2. Financial Analytics Dashboard**
+- Budget vs. actual trend lines
+- Cost breakdown by category (labor, materials, equipment)
+- Forecast accuracy analysis
+- Variance waterfall charts
+
+**3. Resource Management Dashboard**
+- Team utilization rates
+- Skill gap analysis
+- Capacity planning heatmap
+- Overtime trends
+
+**4. Risk & Issue Tracker**
+- Open issues by priority
+- Risk burndown charts
+- SLA compliance metrics
+- Escalation pipeline
+
+**5-12**: Specialized views for procurement, quality, safety, vendor management, etc.
+
+**Interactivity features:**
+- Drill-down from summary to transaction level
+- Date range selectors
+- Cross-filtering across visuals
+- Exportable reports
+- Mobile-responsive layouts
+
+## The Results
+
+### Quantitative Impact
+
+✅ **Reporting time reduced from 6 hours to 10 minutes** (97% time savings)
+
+✅ **Data refresh every 15 minutes** vs. weekly manual updates (42,000% faster)
+
+✅ **7 data sources consolidated** into single source of truth
+
+✅ **12 interactive dashboards** replacing 50+ static PowerPoint slides
+
+✅ **100% data accuracy** (eliminated manual transcription errors)
+
+### Business Outcomes
+
+**1. Early Risk Detection**
+
+Automated alerts identified budget overruns **3 weeks earlier** on average, enabling corrective action before critical thresholds.
+
+**Example**: Dashboard flagged 18% budget variance on Project Alpha in Week 8. Investigation revealed unauthorized scope creep. Corrective action saved **₹4.2M** ($50K USD).
+
+**2. Optimized Resource Allocation**
+
+Real-time utilization data revealed:
+- 3 engineers were underutilized (32% capacity)
+- 2 teams were overburdened (120% capacity)
+
+**Outcome**: Rebalanced workload, increased overall productivity by **15%**, reduced burnout.
+
+**3. Data-Driven Decisions**
+
+Executive leadership now makes decisions based on **real-time data**, not week-old snapshots.
+
+**Quote from CIO**: *"Before this dashboard, we were flying blind. Now we have a cockpit view of every project. It's transformational."*
+
+**4. Stakeholder Satisfaction**
+
+Survey of 40 stakeholders:
+- 95% reported "significantly improved" access to project data
+- 88% said dashboard helped them make better decisions
+- 100% preferred dashboard over manual reports
+
+## Technical Learnings
+
+### What Worked Well
+
+**1. Incremental Development**
+
+Started with 2 data sources and 1 dashboard. Validated with users. Iterated based on feedback. Expanded to 7 sources and 12 dashboards over 4 months.
+
+**Lesson**: Don't build everything upfront. Build, validate, iterate.
+
+**2. Performance Optimization**
+
+Initial dashboard took 45 seconds to load. Unacceptable.
+
+**Optimizations implemented:**
+- Pre-aggregated views in SQL Server
+- Indexed fact tables on date and project_id
+- Cached queries in Power BI
+- Reduced refresh frequency for historical data
+
+**Result**: Load time reduced to **3 seconds**.
+
+**3. Data Quality Monitoring**
+
+Implemented automated data quality checks:
+```python
+def validate_data_quality(df):
+    checks = {
+        'null_check': df.isnull().sum(),
+        'duplicate_check': df.duplicated().sum(),
+        'range_check': (df['budget'] < 0).sum(),
+        'freshness_check': (datetime.now() - df['updated_at'].max()).days
+    }
+    
+    if any(check > threshold for check in checks.values()):
+        send_alert('Data quality issue detected')
+    
+    return checks
+```
+
+### Challenges Overcome
+
+**Challenge 1: Data Inconsistencies**
+
+Different systems used different project identifiers (codes, names, IDs). Joining was a nightmare.
+
+**Solution**: Created a master project registry in the warehouse with mapping tables:
+```sql
+CREATE TABLE project_id_mapping (
+    canonical_id INT PRIMARY KEY,
+    jira_key VARCHAR(20),
+    sap_code VARCHAR(15),
+    ms_project_guid UNIQUEIDENTIFIER
+);
+```
+
+**Challenge 2: API Rate Limits**
+
+Jira API limited to 100 requests/minute. Full data extraction took 30 minutes, blocking refresh.
+
+**Solution**: Implemented incremental extraction (only fetch changes since last run) + caching:
+```python
+last_sync = get_last_sync_timestamp()
+issues = jira.search_issues(f'updated >= "{last_sync}" AND project=INFRA')
+```
+
+**Reduced extraction time from 30 minutes to 2 minutes.**
+
+**Challenge 3: User Adoption**
+
+Initial dashboards were data-rich but insight-poor. Users didn't know what to look at.
+
+**Solution**: Added contextual insights and alerts:
+- Automated commentary ("Budget utilization increased 12% this week")
+- Color-coded KPIs (red/yellow/green)
+- Recommended actions ("Review Project X — 3 weeks behind schedule")
+
+**Result**: User engagement increased 4x.
+
+## Future Enhancements
+
+- **Predictive Analytics**: ML models to forecast project delays and budget overruns
+- **Natural Language Queries**: "Show me projects over budget in Q3" → dashboard updates
+- **Automated Reporting**: PDF reports emailed to stakeholders weekly
+- **Mobile App**: Field access to dashboards on tablets
+- **Integration with MS Teams**: Alerts and reports in chat channels
+
+## Conclusion
+
+This infrastructure analytics dashboard transformed how the organization manages projects. By consolidating 7 data sources, automating ETL pipelines, and building intuitive visualizations, I delivered:
+
+- **97% reduction in reporting time**
+- **Real-time visibility** into project health
+- **Data-driven decision making** for leadership
+- **Early risk detection** saving millions in budget overruns
+
+**Key takeaways:**
+- **Data consolidation unlocks value** — siloed data is useless data
+- **Automation > manual work** — invest in ETL to save perpetual effort
+- **Visualization matters** — pretty charts don't matter if they don't drive action
+- **User-centric design** — dashboards must answer "So what?" not just "What?"
+
+This project reinforced my passion for turning raw data into actionable intelligence. **The best dashboard isn't the one with the most features — it's the one that changes decisions.**
